@@ -13,6 +13,7 @@ model User {
   fullName     String
   businessName String?
   passwordHash String
+  profilePic   String?
   customers    Customer[]
   createdAt    DateTime   @default(now())
 }
