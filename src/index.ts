@@ -1,8 +1,8 @@
-import express from 'express';
+import express, { Request, Response } from 'express';
 import cors from 'cors';
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
+import * as jwt from 'jsonwebtoken';
 import { authenticate, AuthRequest } from './middlewares/auth';
 
 const prisma = new PrismaClient();
@@ -14,7 +14,7 @@ app.use(express.json());
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret';
 
 // Auth Routes
-app.post('/v1/auth/register', async (req, res) => {
+app.post('/v1/auth/register', async (req: Request, res: Response) => {
   const { phone, fullName, businessName, password } = req.body;
   try {
     const hashedPassword = await bcrypt.hash(password, 12);
@@ -33,7 +33,7 @@ app.post('/v1/auth/register', async (req, res) => {
   }
 });
 
-app.post('/v1/auth/login', async (req, res) => {
+app.post('/v1/auth/login', async (req: Request, res: Response) => {
   const { phone, password } = req.body;
   try {
     const user = await prisma.user.findUnique({ where: { phone } });
@@ -48,10 +48,10 @@ app.post('/v1/auth/login', async (req, res) => {
 });
 
 // Dashboard Summary
-app.get('/v1/dashboard/summary', authenticate, async (req: AuthRequest, res) => {
+app.get('/v1/dashboard/summary', authenticate, async (req: AuthRequest, res: Response) => {
   try {
     const customers = await prisma.customer.findMany({ where: { ownerId: req.userId } });
-    const totalOutstanding = customers.reduce((acc, curr) => acc + curr.totalDue, 0);
+    const totalOutstanding = customers.reduce((acc, curr) => acc + Number(curr.totalDue), 0);
     res.json({
       totalOutstanding,
       todayCollection: 0,
@@ -63,12 +63,16 @@ app.get('/v1/dashboard/summary', authenticate, async (req: AuthRequest, res) => 
 });
 
 // Customer Routes
-app.get('/v1/customers', authenticate, async (req: AuthRequest, res) => {
-  const customers = await prisma.customer.findMany({ where: { ownerId: req.userId } });
-  res.json(customers);
+app.get('/v1/customers', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const customers = await prisma.customer.findMany({ where: { ownerId: req.userId } });
+    res.json(customers);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch customers' });
+  }
 });
 
-app.post('/v1/customers', authenticate, async (req: AuthRequest, res) => {
+app.post('/v1/customers', authenticate, async (req: AuthRequest, res: Response) => {
   const { name, phone } = req.body;
   try {
     const customer = await prisma.customer.create({
@@ -81,12 +85,16 @@ app.post('/v1/customers', authenticate, async (req: AuthRequest, res) => {
 });
 
 // Transaction Routes
-app.get('/v1/customers/:id/transactions', authenticate, async (req, res) => {
-  const transactions = await prisma.transaction.findMany({ where: { customerId: req.params.id } });
-  res.json(transactions);
+app.get('/v1/customers/:id/transactions', authenticate, async (req: Request, res: Response) => {
+  try {
+    const transactions = await prisma.transaction.findMany({ where: { customerId: req.params.id } });
+    res.json(transactions);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch transactions' });
+  }
 });
 
-app.post('/v1/transactions', authenticate, async (req, res) => {
+app.post('/v1/transactions', authenticate, async (req: AuthRequest, res: Response) => {
   const { customerId, amount, type, description } = req.body;
   try {
     const transaction = await prisma.transaction.create({
