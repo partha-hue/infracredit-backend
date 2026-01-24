@@ -1,5 +1,5 @@
 datasource db {
-  provider = "postgresql"
+  provider = "mongodb"
   url      = env("DATABASE_URL")
 }
 
@@ -8,7 +8,7 @@ generator client {
 }
 
 model User {
-  id           String     @id @default(uuid())
+  id           String     @id @default(auto()) @map("_id") @db.ObjectId
   phone        String     @unique
   fullName     String
   businessName String?
@@ -18,12 +18,12 @@ model User {
 }
 
 model Customer {
-  id           String        @id @default(uuid())
-  ownerId      String
+  id           String        @id @default(auto()) @map("_id") @db.ObjectId
+  ownerId      String        @db.ObjectId
   owner        User          @relation(fields: [ownerId], references: [id])
   name         String
   phone        String?
-  totalDue     Decimal       @default(0.00)
+  totalDue     Float         @default(0.0)
   transactions Transaction[]
   createdAt    DateTime      @default(now())
 
@@ -36,10 +36,10 @@ enum TransactionType {
 }
 
 model Transaction {
-  id          String          @id @default(uuid())
-  customerId  String
+  id          String          @id @default(auto()) @map("_id") @db.ObjectId
+  customerId  String          @db.ObjectId
   customer    Customer        @relation(fields: [customerId], references: [id])
-  amount      Decimal
+  amount      Float
   type        TransactionType
   description String?
   createdAt   DateTime        @default(now())
