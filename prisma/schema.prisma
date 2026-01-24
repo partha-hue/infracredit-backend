@@ -24,6 +24,7 @@ model Customer {
   name         String
   phone        String?
   totalDue     Float         @default(0.0)
+  isDeleted    Boolean       @default(false)
   transactions Transaction[]
   createdAt    DateTime      @default(now())
 
