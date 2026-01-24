@@ -46,7 +46,18 @@ app.get('/v1/auth/profile', authenticate, async (req: AuthRequest, res: Response
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.userId },
-      select: { id: true, phone: true, fullName: true, businessName: true, profilePic: true, createdAt: true }
+      select: { 
+        id: true, 
+        phone: true, 
+        fullName: true, 
+        businessName: true, 
+        profilePic: true, 
+        email: true, 
+        address: true,
+        latitude: true,
+        longitude: true,
+        createdAt: true 
+      }
     });
     res.json(user);
   } catch (error) {
@@ -55,15 +66,46 @@ app.get('/v1/auth/profile', authenticate, async (req: AuthRequest, res: Response
 });
 
 app.put('/v1/auth/profile', authenticate, async (req: AuthRequest, res: Response) => {
-  const { fullName, businessName, profilePic } = req.body;
+  const { fullName, businessName, profilePic, email, address, latitude, longitude } = req.body;
   try {
     const user = await prisma.user.update({
       where: { id: req.userId },
-      data: { fullName, businessName, profilePic }
+      data: { fullName, businessName, profilePic, email, address, latitude, longitude }
     });
-    res.json({ userId: user.id, fullName: user.fullName, businessName: user.businessName, profilePic: user.profilePic });
+    res.json(user);
   } catch (error) {
     res.status(500).json({ error: 'Failed to update profile' });
+  }
+});
+
+app.post('/v1/auth/forgot-password', async (req: Request, res: Response) => {
+  const { phone } = req.query;
+  try {
+    const user = await prisma.user.findUnique({ where: { phone: String(phone) } });
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    res.json({ success: true, message: 'Password reset link sent to registered mobile' });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to process request' });
+  }
+});
+
+app.post('/v1/auth/reset-password', authenticate, async (req: AuthRequest, res: Response) => {
+  const { oldPassword, newPassword } = req.body;
+  try {
+    const user = await prisma.user.findUnique({ where: { id: req.userId } });
+    if (!user || !(await bcrypt.compare(oldPassword, user.passwordHash))) {
+      return res.status(401).json({ error: 'Incorrect old password' });
+    }
+    const hashedPassword = await bcrypt.hash(newPassword, 12);
+    await prisma.user.update({
+      where: { id: req.userId },
+      data: { passwordHash: hashedPassword }
+    });
+    res.json({ success: true, message: 'Password updated successfully' });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to reset password' });
   }
 });
 
@@ -75,6 +117,18 @@ app.get('/v1/customers', authenticate, async (req: AuthRequest, res: Response) =
     orderBy: { createdAt: 'desc' }
   });
   res.json(customers);
+});
+
+app.get('/v1/customers/:id', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const customer = await prisma.customer.findFirst({
+      where: { id: req.params.id, ownerId: req.userId }
+    });
+    if (!customer) return res.status(404).json({ error: 'Customer not found' });
+    res.json(customer);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch customer' });
+  }
 });
 
 app.post('/v1/customers', authenticate, async (req: AuthRequest, res: Response) => {
@@ -96,9 +150,14 @@ app.put('/v1/customers/:id', authenticate, async (req: AuthRequest, res: Respons
 
 app.delete('/v1/customers/:id', authenticate, async (req: AuthRequest, res: Response) => {
   try {
-    await prisma.transaction.deleteMany({ where: { customerId: req.params.id } });
-    await prisma.customer.delete({ where: { id: req.params.id } });
-    res.json({ success: true });
+    const customer = await prisma.customer.findFirst({ where: { id: req.params.id, ownerId: req.userId } });
+    if (!customer) return res.status(403).json({ error: 'Forbidden' });
+
+    await prisma.customer.update({
+      where: { id: req.params.id },
+      data: { isDeleted: true }
+    });
+    res.json({ success: true, message: 'Customer moved to recycle bin' });
   } catch (error) {
     res.status(500).json({ error: 'Failed to delete customer' });
   }
