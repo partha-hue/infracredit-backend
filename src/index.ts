@@ -8,8 +8,8 @@ import { authenticate, AuthRequest } from './middlewares/auth';
 const prisma = new PrismaClient();
 const app = express();
 
-app.use(cors());
-app.use(express.json());
+app.use(cors({ origin: '*' }));
+app.use(express.json({ limit: '50mb' })); // Increased limit for profile pic base64
 
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret';
 
@@ -46,7 +46,7 @@ app.get('/v1/auth/profile', authenticate, async (req: AuthRequest, res: Response
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.userId },
-      select: { id: true, phone: true, fullName: true, businessName: true, createdAt: true }
+      select: { id: true, phone: true, fullName: true, businessName: true, profilePic: true, createdAt: true }
     });
     res.json(user);
   } catch (error) {
@@ -55,13 +55,13 @@ app.get('/v1/auth/profile', authenticate, async (req: AuthRequest, res: Response
 });
 
 app.put('/v1/auth/profile', authenticate, async (req: AuthRequest, res: Response) => {
-  const { fullName, businessName } = req.body;
+  const { fullName, businessName, profilePic } = req.body;
   try {
     const user = await prisma.user.update({
       where: { id: req.userId },
-      data: { fullName, businessName }
+      data: { fullName, businessName, profilePic }
     });
-    res.json({ userId: user.id, fullName: user.fullName, businessName: user.businessName });
+    res.json({ userId: user.id, fullName: user.fullName, businessName: user.businessName, profilePic: user.profilePic });
   } catch (error) {
     res.status(500).json({ error: 'Failed to update profile' });
   }
@@ -80,7 +80,7 @@ app.get('/v1/customers', authenticate, async (req: AuthRequest, res: Response) =
 app.post('/v1/customers', authenticate, async (req: AuthRequest, res: Response) => {
   const { name, phone } = req.body;
   const customer = await prisma.customer.create({
-    data: { name, phone, ownerId: req.userId! }
+    data: { name, phone, ownerId: req.userId!, totalDue: 0 }
   });
   res.json(customer);
 });
@@ -117,9 +117,6 @@ app.post('/v1/transactions', authenticate, async (req, res) => {
   const { customerId, amount, type, description } = req.body;
   const tx = await prisma.transaction.create({ data: { customerId, amount, type, description } });
   
-  // Update customer totalDue
-  // CREDIT: You GAVE money (customer owes you more) -> + amount
-  // PAYMENT: You GOT money (customer owes you less) -> - amount
   const adjustment = type === 'CREDIT' ? amount : -amount;
   
   await prisma.customer.update({
@@ -132,32 +129,15 @@ app.post('/v1/transactions', authenticate, async (req, res) => {
 // --- DASHBOARD ---
 app.get('/v1/dashboard/summary', authenticate, async (req: AuthRequest, res: Response) => {
   const userId = req.userId;
-  
-  const customers = await prisma.customer.findMany({ 
-    where: { ownerId: userId, isDeleted: false } 
-  });
-  
+  const customers = await prisma.customer.findMany({ where: { ownerId: userId, isDeleted: false } });
   const totalOutstanding = customers.reduce((acc, c) => acc + Number(c.totalDue), 0);
-  
-  // Calculate today's collection (Payments received today)
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  
   const todayPayments = await prisma.transaction.findMany({
-    where: {
-      type: 'PAYMENT',
-      createdAt: { gte: today },
-      customer: { ownerId: userId }
-    }
+    where: { type: 'PAYMENT', createdAt: { gte: today }, customer: { ownerId: userId } }
   });
-  
   const todayCollection = todayPayments.reduce((acc, tx) => acc + tx.amount, 0);
-
-  res.json({ 
-    totalOutstanding, 
-    todayCollection, 
-    activeCustomers: customers.length 
-  });
+  res.json({ totalOutstanding, todayCollection, activeCustomers: customers.length });
 });
 
 const PORT = process.env.PORT || 3000;
