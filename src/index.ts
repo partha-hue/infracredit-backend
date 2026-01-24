@@ -22,12 +22,18 @@ app.post('/v1/auth/register', async (req: Request, res: Response) => {
       data: {
         phone,
         fullName,
-        businessName,
+        businessName: businessName || null,
         passwordHash: hashedPassword,
       },
     });
     const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '7d' });
-    res.json({ accessToken: token, refreshToken: token, userId: user.id, fullName: user.fullName });
+    res.json({ 
+        accessToken: token, 
+        refreshToken: token, 
+        userId: user.id, 
+        fullName: user.fullName,
+        businessName: user.businessName || null 
+    });
   } catch (error) {
     res.status(400).json({ error: 'Registration failed' });
   }
@@ -41,7 +47,13 @@ app.post('/v1/auth/login', async (req: Request, res: Response) => {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
     const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '7d' });
-    res.json({ accessToken: token, refreshToken: token, userId: user.id, fullName: user.fullName });
+    res.json({ 
+        accessToken: token, 
+        refreshToken: token, 
+        userId: user.id, 
+        fullName: user.fullName,
+        businessName: user.businessName || null
+    });
   } catch (error) {
     res.status(500).json({ error: 'Login failed' });
   }
