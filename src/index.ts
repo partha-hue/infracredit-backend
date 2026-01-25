@@ -108,6 +108,19 @@ app.get('/v1/auth/profile', authenticate, async (req: AuthRequest, res: Response
   }
 });
 
+app.put('/v1/auth/profile', authenticate, async (req: AuthRequest, res: Response) => {
+    const { fullName, businessName, email, address, profilePic } = req.body;
+    try {
+        const user = await prisma.user.update({
+            where: { id: req.userId },
+            data: { fullName, businessName, email, address, profilePic }
+        });
+        res.json(user);
+    } catch (error) {
+        res.status(500).json({ error: 'Update failed' });
+    }
+});
+
 // --- CUSTOMERS (Real-time recalculation happens here) ---
 app.post('/v1/transactions', authenticate, async (req, res) => {
   const { customerId, amount, type, description } = req.body;
@@ -147,10 +160,47 @@ app.get('/v1/customers/:id', authenticate, async (req: AuthRequest, res: Respons
   res.json(customer);
 });
 
+app.get('/v1/customers/:id/transactions', authenticate, async (req: AuthRequest, res: Response) => {
+    try {
+        const transactions = await prisma.transaction.findMany({
+            where: { customerId: req.params.id },
+            orderBy: { createdAt: 'asc' }
+        });
+        res.json(transactions);
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to fetch transactions' });
+    }
+});
+
 app.post('/v1/customers', authenticate, async (req: AuthRequest, res: Response) => {
   const { name, phone } = req.body;
   const customer = await prisma.customer.create({ data: { name, phone, ownerId: req.userId!, totalDue: 0 } });
   res.json(customer);
+});
+
+app.put('/v1/customers/:id', authenticate, async (req: AuthRequest, res: Response) => {
+    const { name, phone, isDeleted } = req.body;
+    try {
+        const customer = await prisma.customer.update({
+            where: { id: req.params.id, ownerId: req.userId },
+            data: { name, phone, isDeleted }
+        });
+        res.json(customer);
+    } catch (error) {
+        res.status(500).json({ error: 'Update failed' });
+    }
+});
+
+app.delete('/v1/customers/:id', authenticate, async (req: AuthRequest, res: Response) => {
+    try {
+        await prisma.customer.update({
+            where: { id: req.params.id, ownerId: req.userId },
+            data: { isDeleted: true }
+        });
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: 'Delete failed' });
+    }
 });
 
 app.get('/v1/dashboard/summary', authenticate, async (req: AuthRequest, res: Response) => {
