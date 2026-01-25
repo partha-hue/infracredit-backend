@@ -9,15 +9,16 @@ generator client {
 
 model User {
   id           String     @id @default(auto()) @map("_id") @db.ObjectId
-  phone        String     @unique
+  phone        String?    @unique
   fullName     String
-  email        String?
+  email        String?    @unique
   address      String?
   businessName String?
   passwordHash String
   profilePic   String?
   latitude     Float?
   longitude    Float?
+  isMigrated   Boolean    @default(false)
   customers    Customer[]
   createdAt    DateTime   @default(now())
 }
