@@ -13,7 +13,6 @@ app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '50mb' }));
 
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret';
-// Production-safe: Secrets are now read from Environment Variables
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
 const TWILIO_PHONE_NUMBER = process.env.TWILIO_PHONE_NUMBER;
@@ -87,11 +86,39 @@ app.post('/v1/auth/login', async (req: Request, res: Response) => {
   }
 });
 
+app.get('/v1/auth/profile', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.userId },
+      select: { 
+        id: true, phone: true, fullName: true, businessName: true, 
+        profilePic: true, email: true, address: true, isMigrated: true, createdAt: true 
+      }
+    });
+    res.json(user);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch profile' });
+  }
+});
+
+app.put('/v1/auth/profile', authenticate, async (req: AuthRequest, res: Response) => {
+    const { fullName, businessName, email, address, profilePic } = req.body;
+    try {
+        const user = await prisma.user.update({
+            where: { id: req.userId },
+            data: { fullName, businessName, email, address, profilePic }
+        });
+        res.json(user);
+    } catch (error) {
+        res.status(500).json({ error: 'Update failed' });
+    }
+});
+
 app.post('/v1/auth/forgot-password', async (req: Request, res: Response) => {
   const { phone } = req.query;
   try {
     if (!twilioClient || !TWILIO_PHONE_NUMBER) {
-      return res.status(500).json({ error: 'SMS Service not configured' });
+      return res.status(500).json({ error: 'SMS Service not configured on server' });
     }
 
     const user = await prisma.user.findUnique({ where: { phone: phone as string } });
@@ -115,7 +142,7 @@ app.post('/v1/auth/forgot-password', async (req: Request, res: Response) => {
     res.json({ success: true, message: 'OTP sent successfully to your phone.' });
   } catch (error) {
     console.error('Twilio Error:', error);
-    res.status(500).json({ error: 'Failed to send OTP' });
+    res.status(500).json({ error: 'Failed to send SMS' });
   }
 });
 
@@ -156,34 +183,95 @@ app.post('/v1/auth/reset-password', authenticate, async (req: AuthRequest, res: 
   }
 });
 
-// ... DASHBOARD, CUSTOMERS, TRANSACTIONS (remained same)
+// --- DASHBOARD ---
 app.get('/v1/dashboard/summary', authenticate, async (req: AuthRequest, res: Response) => {
-  const customers = await prisma.customer.findMany({ where: { ownerId: req.userId, isDeleted: false } });
-  const totalOutstanding = customers.reduce((acc, c) => acc + Number(c.totalDue), 0);
-  const today = new Date(); today.setHours(0,0,0,0);
-  const todayPayments = await prisma.transaction.findMany({
-    where: { type: 'PAYMENT', createdAt: { gte: today }, customer: { ownerId: req.userId } }
-  });
-  const todayCollection = todayPayments.reduce((acc, tx) => acc + tx.amount, 0);
-  res.json({ totalOutstanding, todayCollection, activeCustomers: customers.length });
+  try {
+    const customers = await prisma.customer.findMany({ where: { ownerId: req.userId, isDeleted: false } });
+    const totalOutstanding = customers.reduce((acc, c) => acc + Number(c.totalDue), 0);
+    const today = new Date(); today.setHours(0,0,0,0);
+    const todayPayments = await prisma.transaction.findMany({
+      where: { type: 'PAYMENT', createdAt: { gte: today }, customer: { ownerId: req.userId } }
+    });
+    const todayCollection = todayPayments.reduce((acc, tx) => acc + tx.amount, 0);
+    res.json({ totalOutstanding, todayCollection, activeCustomers: customers.length });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch summary' });
+  }
 });
 
+// --- CUSTOMERS ---
 app.get('/v1/customers', authenticate, async (req: AuthRequest, res: Response) => {
   const isDeleted = req.query.deleted === 'true';
-  const customers = await prisma.customer.findMany({ 
-    where: { ownerId: req.userId, isDeleted: isDeleted },
-    orderBy: { createdAt: 'desc' }
-  });
-  res.json(customers);
+  try {
+    const customers = await prisma.customer.findMany({ 
+      where: { ownerId: req.userId, isDeleted: isDeleted },
+      orderBy: { createdAt: 'desc' }
+    });
+    res.json(customers);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch customers' });
+  }
+});
+
+app.get('/v1/customers/:id', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const customer = await prisma.customer.findFirst({ where: { id: req.params.id, ownerId: req.userId } });
+    if (!customer) return res.status(404).json({ error: 'Not found' });
+    res.json(customer);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch customer' });
+  }
 });
 
 app.post('/v1/customers', authenticate, async (req: AuthRequest, res: Response) => {
   const { name, phone } = req.body;
-  const customer = await prisma.customer.create({ data: { name, phone, ownerId: req.userId!, totalDue: 0 } });
-  res.json(customer);
+  try {
+    const customer = await prisma.customer.create({ data: { name, phone, ownerId: req.userId!, totalDue: 0 } });
+    res.json(customer);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to create customer' });
+  }
 });
 
-app.post('/v1/transactions', authenticate, async (req, res) => {
+app.put('/v1/customers/:id', authenticate, async (req: AuthRequest, res: Response) => {
+    const { name, phone, isDeleted } = req.body;
+    try {
+        const customer = await prisma.customer.update({
+            where: { id: req.params.id, ownerId: req.userId },
+            data: { name, phone, isDeleted }
+        });
+        res.json(customer);
+    } catch (error) {
+        res.status(500).json({ error: 'Update failed' });
+    }
+});
+
+app.delete('/v1/customers/:id', authenticate, async (req: AuthRequest, res: Response) => {
+    try {
+        await prisma.customer.update({
+            where: { id: req.params.id, ownerId: req.userId },
+            data: { isDeleted: true }
+        });
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: 'Delete failed' });
+    }
+});
+
+// --- TRANSACTIONS ---
+app.get('/v1/customers/:id/transactions', authenticate, async (req: AuthRequest, res: Response) => {
+    try {
+        const transactions = await prisma.transaction.findMany({
+            where: { customerId: req.params.id },
+            orderBy: { createdAt: 'asc' }
+        });
+        res.json(transactions);
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to fetch transactions' });
+    }
+});
+
+app.post('/v1/transactions', authenticate, async (req: AuthRequest, res: Response) => {
   const { customerId, amount, type, description } = req.body;
   try {
     const result = await prisma.$transaction(async (tx) => {
@@ -199,6 +287,55 @@ app.post('/v1/transactions', authenticate, async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: 'Transaction failed' });
   }
+});
+
+app.put('/v1/transactions/:id', authenticate, async (req: AuthRequest, res: Response) => {
+    const { amount, type, description } = req.body;
+    try {
+        const oldTx = await prisma.transaction.findUnique({ where: { id: req.params.id } });
+        if (!oldTx) return res.status(404).json({ error: 'Transaction not found' });
+
+        const result = await prisma.$transaction(async (tx) => {
+            const updatedTx = await tx.transaction.update({
+                where: { id: req.params.id },
+                data: { amount, type, description }
+            });
+
+            // Revert old adjustment
+            const oldAdjustment = oldTx.type === 'CREDIT' ? -oldTx.amount : oldTx.amount;
+            // Apply new adjustment
+            const newAdjustment = type === 'CREDIT' ? amount : -amount;
+            
+            await tx.customer.update({
+                where: { id: oldTx.customerId },
+                data: { totalDue: { increment: oldAdjustment + newAdjustment } }
+            });
+
+            return updatedTx;
+        });
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ error: 'Update failed' });
+    }
+});
+
+app.delete('/v1/transactions/:id', authenticate, async (req: AuthRequest, res: Response) => {
+    try {
+        const oldTx = await prisma.transaction.findUnique({ where: { id: req.params.id } });
+        if (!oldTx) return res.status(404).json({ error: 'Transaction not found' });
+
+        await prisma.$transaction(async (tx) => {
+            const adjustment = oldTx.type === 'CREDIT' ? -oldTx.amount : oldTx.amount;
+            await tx.customer.update({
+                where: { id: oldTx.customerId },
+                data: { totalDue: { increment: adjustment } }
+            });
+            await tx.transaction.delete({ where: { id: req.params.id } });
+        });
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: 'Delete failed' });
+    }
 });
 
 const PORT = process.env.PORT || 3000;
