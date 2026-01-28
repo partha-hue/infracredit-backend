@@ -19,6 +19,7 @@ model User {
   latitude     Float?
   longitude    Float?
   isMigrated   Boolean    @default(false)
+  resetToken   String?    // Added for OTP verification
   customers    Customer[]
   createdAt    DateTime   @default(now())
 }
