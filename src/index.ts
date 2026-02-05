@@ -25,6 +25,23 @@ const generateTokens = (userId: string) => {
   return { accessToken, refreshToken };
 };
 
+const sendSms = async (to: string, body: string) => {
+  if (!twilioClient || !TWILIO_PHONE_NUMBER) {
+    console.error('Twilio not configured');
+    return;
+  }
+  try {
+    const formattedPhone = to.startsWith('+') ? to : `+91${to.replace(/\s/g, '')}`;
+    await twilioClient.messages.create({
+      body,
+      from: TWILIO_PHONE_NUMBER,
+      to: formattedPhone
+    });
+  } catch (error) {
+    console.error('Twilio Error:', error);
+  }
+};
+
 // --- AUTH ---
 
 app.post('/v1/auth/register', async (req: Request, res: Response) => {
@@ -133,15 +150,10 @@ app.post('/v1/auth/forgot-password', async (req: Request, res: Response) => {
       data: { resetToken: otp }
     });
 
-    await twilioClient.messages.create({
-      body: `Your InfraCredit password reset OTP is: ${otp}`,
-      from: TWILIO_PHONE_NUMBER,
-      to: (phone as string).startsWith('+') ? (phone as string) : `+91${phone}`
-    });
+    await sendSms(phone as string, `Your InfraCredit password reset OTP is: ${otp}`);
 
     res.json({ success: true, message: 'OTP sent successfully to your phone.' });
   } catch (error) {
-    console.error('Twilio Error:', error);
     res.status(500).json({ error: 'Failed to send SMS' });
   }
 });
@@ -274,13 +286,24 @@ app.get('/v1/customers/:id/transactions', authenticate, async (req: AuthRequest,
 app.post('/v1/transactions', authenticate, async (req: AuthRequest, res: Response) => {
   const { customerId, amount, type, description } = req.body;
   try {
+    const owner = await prisma.user.findUnique({ where: { id: req.userId } });
     const result = await prisma.$transaction(async (tx) => {
       const transaction = await tx.transaction.create({ data: { customerId, amount, type, description } });
       const adjustment = type === 'CREDIT' ? amount : -amount;
-      await tx.customer.update({
+      const customer = await tx.customer.update({
         where: { id: customerId },
         data: { totalDue: { increment: adjustment } }
       });
+      
+      // Send Automatic SMS via Twilio
+      if (customer.phone) {
+        const typeStr = type === 'CREDIT' ? 'Credit' : 'Payment';
+        const balance = Math.abs(customer.totalDue);
+        const label = customer.totalDue >= 0 ? 'Total Due' : 'Advance';
+        const msg = `Dear ${customer.name}, ₹${amount} (${typeStr}) recorded. ${label}: ₹${balance}. - Sent by ${owner?.fullName || 'Shop Owner'} via InfraCredit`;
+        sendSms(customer.phone, msg);
+      }
+      
       return transaction;
     });
     res.json(result);
@@ -301,12 +324,10 @@ app.put('/v1/transactions/:id', authenticate, async (req: AuthRequest, res: Resp
                 data: { amount, type, description }
             });
 
-            // Revert old adjustment
             const oldAdjustment = oldTx.type === 'CREDIT' ? -oldTx.amount : oldTx.amount;
-            // Apply new adjustment
             const newAdjustment = type === 'CREDIT' ? amount : -amount;
             
-            await tx.customer.update({
+            const customer = await tx.customer.update({
                 where: { id: oldTx.customerId },
                 data: { totalDue: { increment: oldAdjustment + newAdjustment } }
             });
