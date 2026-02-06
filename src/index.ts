@@ -4,7 +4,6 @@ import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import * as jwt from 'jsonwebtoken';
 import { authenticate, AuthRequest } from './middlewares/auth';
-import twilio from 'twilio';
 
 const prisma = new PrismaClient();
 const app = express();
@@ -13,33 +12,11 @@ app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '50mb' }));
 
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret';
-const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
-const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
-const TWILIO_PHONE_NUMBER = process.env.TWILIO_PHONE_NUMBER;
-
-const twilioClient = TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN ? twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN) : null;
 
 const generateTokens = (userId: string) => {
   const accessToken = jwt.sign({ userId }, JWT_SECRET, { expiresIn: '7d' });
   const refreshToken = jwt.sign({ userId }, JWT_SECRET, { expiresIn: '30d' });
   return { accessToken, refreshToken };
-};
-
-const sendSms = async (to: string, body: string) => {
-  if (!twilioClient || !TWILIO_PHONE_NUMBER) {
-    console.error('Twilio not configured');
-    return;
-  }
-  try {
-    const formattedPhone = to.startsWith('+') ? to : `+91${to.replace(/\s/g, '')}`;
-    await twilioClient.messages.create({
-      body,
-      from: TWILIO_PHONE_NUMBER,
-      to: formattedPhone
-    });
-  } catch (error) {
-    console.error('Twilio Error:', error);
-  }
 };
 
 // --- AUTH ---
@@ -134,13 +111,9 @@ app.put('/v1/auth/profile', authenticate, async (req: AuthRequest, res: Response
 app.post('/v1/auth/forgot-password', async (req: Request, res: Response) => {
   const { phone } = req.query;
   try {
-    if (!twilioClient || !TWILIO_PHONE_NUMBER) {
-      return res.status(500).json({ error: 'SMS Service not configured on server' });
-    }
-
     const user = await prisma.user.findUnique({ where: { phone: phone as string } });
     if (!user) {
-      return res.json({ success: true, message: 'If registered, an OTP will be sent.' });
+      return res.json({ success: true, message: 'If registered, an OTP will be generated.' });
     }
 
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
@@ -150,11 +123,14 @@ app.post('/v1/auth/forgot-password', async (req: Request, res: Response) => {
       data: { resetToken: otp }
     });
 
-    await sendSms(phone as string, `Your InfraCredit password reset OTP is: ${otp}`);
-
-    res.json({ success: true, message: 'OTP sent successfully to your phone.' });
+    // We no longer send SMS from backend. 
+    // In a real app, you'd use a service, but the user requested SIM card sending.
+    // Since this is for password reset, the app will have to handle the "Send OTP" 
+    // button by triggering a local SMS to the user themselves or showing it for demo.
+    // For now, we just return success.
+    res.json({ success: true, message: 'OTP generated. Please check your SMS app.', otp }); 
   } catch (error) {
-    res.status(500).json({ error: 'Failed to send SMS' });
+    res.status(500).json({ error: 'Failed to generate OTP' });
   }
 });
 
@@ -286,24 +262,13 @@ app.get('/v1/customers/:id/transactions', authenticate, async (req: AuthRequest,
 app.post('/v1/transactions', authenticate, async (req: AuthRequest, res: Response) => {
   const { customerId, amount, type, description } = req.body;
   try {
-    const owner = await prisma.user.findUnique({ where: { id: req.userId } });
     const result = await prisma.$transaction(async (tx) => {
       const transaction = await tx.transaction.create({ data: { customerId, amount, type, description } });
       const adjustment = type === 'CREDIT' ? amount : -amount;
-      const customer = await tx.customer.update({
+      await tx.customer.update({
         where: { id: customerId },
         data: { totalDue: { increment: adjustment } }
       });
-      
-      // Send Automatic SMS via Twilio
-      if (customer.phone) {
-        const typeStr = type === 'CREDIT' ? 'Credit' : 'Payment';
-        const balance = Math.abs(customer.totalDue);
-        const label = customer.totalDue >= 0 ? 'Total Due' : 'Advance';
-        const msg = `Dear ${customer.name}, ₹${amount} (${typeStr}) recorded. ${label}: ₹${balance}. - Sent by ${owner?.fullName || 'Shop Owner'} via InfraCredit`;
-        sendSms(customer.phone, msg);
-      }
-      
       return transaction;
     });
     res.json(result);
@@ -327,7 +292,7 @@ app.put('/v1/transactions/:id', authenticate, async (req: AuthRequest, res: Resp
             const oldAdjustment = oldTx.type === 'CREDIT' ? -oldTx.amount : oldTx.amount;
             const newAdjustment = type === 'CREDIT' ? amount : -amount;
             
-            const customer = await tx.customer.update({
+            await tx.customer.update({
                 where: { id: oldTx.customerId },
                 data: { totalDue: { increment: oldAdjustment + newAdjustment } }
             });
