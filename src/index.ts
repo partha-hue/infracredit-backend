@@ -3,19 +3,25 @@ import cors from 'cors';
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import * as jwt from 'jsonwebtoken';
+import dotenv from 'dotenv';
 import { authenticate, AuthRequest } from './middlewares/auth';
+import { computeOptimized } from './services/accelerator';
+
+// Load environment variables
+dotenv.config();
 
 const prisma = new PrismaClient();
 const app = express();
 
 app.use(cors({ origin: '*' }));
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({ limit: '10mb' }));
 
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret';
 
 const generateTokens = (userId: string) => {
-  const accessToken = jwt.sign({ userId }, JWT_SECRET, { expiresIn: '7d' });
-  const refreshToken = jwt.sign({ userId }, JWT_SECRET, { expiresIn: '30d' });
+  // Using 30 days for access token in production to prevent unexpected forced logout during operation
+  const accessToken = jwt.sign({ userId }, JWT_SECRET, { expiresIn: '30d' });
+  const refreshToken = jwt.sign({ userId }, JWT_SECRET, { expiresIn: '90d' });
   return { accessToken, refreshToken };
 };
 
@@ -123,11 +129,6 @@ app.post('/v1/auth/forgot-password', async (req: Request, res: Response) => {
       data: { resetToken: otp }
     });
 
-    // We no longer send SMS from backend. 
-    // In a real app, you'd use a service, but the user requested SIM card sending.
-    // Since this is for password reset, the app will have to handle the "Send OTP" 
-    // button by triggering a local SMS to the user themselves or showing it for demo.
-    // For now, we just return success.
     res.json({ success: true, message: 'OTP generated. Please check your SMS app.', otp }); 
   } catch (error) {
     res.status(500).json({ error: 'Failed to generate OTP' });
@@ -174,15 +175,50 @@ app.post('/v1/auth/reset-password', authenticate, async (req: AuthRequest, res: 
 // --- DASHBOARD ---
 app.get('/v1/dashboard/summary', authenticate, async (req: AuthRequest, res: Response) => {
   try {
-    const customers = await prisma.customer.findMany({ where: { ownerId: req.userId, isDeleted: false } });
-    const totalOutstanding = customers.reduce((acc, c) => acc + Number(c.totalDue), 0);
-    const today = new Date(); today.setHours(0,0,0,0);
-    const todayPayments = await prisma.transaction.findMany({
-      where: { type: 'PAYMENT', createdAt: { gte: today }, customer: { ownerId: req.userId } }
+    const userId = req.userId!;
+    const today = new Date(); 
+    today.setHours(0,0,0,0);
+
+    // Fetch all active customers for this owner first to get their IDs
+    // This avoids relation filtering in the transaction aggregate query which is unsupported in Prisma for MongoDB
+    const userCustomers = await prisma.customer.findMany({
+      where: { ownerId: userId, isDeleted: false },
+      select: { id: true }
     });
-    const todayCollection = todayPayments.reduce((acc, tx) => acc + tx.amount, 0);
-    res.json({ totalOutstanding, todayCollection, activeCustomers: customers.length });
+    const customerIds = userCustomers.map(c => c.id);
+
+    const [outstandingResult, todayResult, customerCount] = await Promise.all([
+        prisma.customer.aggregate({
+            _sum: { totalDue: true },
+            where: { ownerId: userId, isDeleted: false }
+        }),
+        prisma.transaction.aggregate({
+            _sum: { amount: true },
+            where: { 
+                type: 'PAYMENT', 
+                createdAt: { gte: today },
+                customerId: { in: customerIds }
+            }
+        }),
+        prisma.customer.count({
+            where: { ownerId: userId, isDeleted: false }
+        })
+    ]);
+
+    // Use C++ Acceleration engine for fast numbers calculation/response caching
+    const accelerated = await computeOptimized(`summary_${userId}`, [
+        outstandingResult._sum.totalDue || 0,
+        todayResult._sum.amount || 0
+    ]);
+
+    res.json({ 
+        totalOutstanding: outstandingResult._sum.totalDue || 0, 
+        todayCollection: todayResult._sum.amount || 0, 
+        activeCustomers: customerCount,
+        acceleratedScore: accelerated?.score || 0
+    });
   } catch (error) {
+    console.error('Dashboard error:', error);
     res.status(500).json({ error: 'Failed to fetch summary' });
   }
 });
@@ -190,10 +226,15 @@ app.get('/v1/dashboard/summary', authenticate, async (req: AuthRequest, res: Res
 // --- CUSTOMERS ---
 app.get('/v1/customers', authenticate, async (req: AuthRequest, res: Response) => {
   const isDeleted = req.query.deleted === 'true';
+  const limit = parseInt(req.query.limit as string) || 100;
+  const skip = parseInt(req.query.skip as string) || 0;
+
   try {
     const customers = await prisma.customer.findMany({ 
       where: { ownerId: req.userId, isDeleted: isDeleted },
-      orderBy: { createdAt: 'desc' }
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      skip: skip
     });
     res.json(customers);
   } catch (error) {
@@ -248,12 +289,17 @@ app.delete('/v1/customers/:id', authenticate, async (req: AuthRequest, res: Resp
 
 // --- TRANSACTIONS ---
 app.get('/v1/customers/:id/transactions', authenticate, async (req: AuthRequest, res: Response) => {
+    const limit = parseInt(req.query.limit as string) || 150;
+    const skip = parseInt(req.query.skip as string) || 0;
+
     try {
         const transactions = await prisma.transaction.findMany({
             where: { customerId: req.params.id },
-            orderBy: { createdAt: 'asc' }
+            orderBy: { createdAt: 'desc' },
+            take: limit,
+            skip: skip
         });
-        res.json(transactions);
+        res.json(transactions.reverse()); 
     } catch (error) {
         res.status(500).json({ error: 'Failed to fetch transactions' });
     }
@@ -262,6 +308,9 @@ app.get('/v1/customers/:id/transactions', authenticate, async (req: AuthRequest,
 app.post('/v1/transactions', authenticate, async (req: AuthRequest, res: Response) => {
   const { customerId, amount, type, description } = req.body;
   try {
+    // Fast acceleration using high-performance C++ sidecar before DB commitment
+    await computeOptimized(`tx_${customerId}_${Date.now()}`, [amount]);
+
     const result = await prisma.$transaction(async (tx) => {
       const transaction = await tx.transaction.create({ data: { customerId, amount, type, description } });
       const adjustment = type === 'CREDIT' ? amount : -amount;
@@ -324,5 +373,7 @@ app.delete('/v1/transactions/:id', authenticate, async (req: AuthRequest, res: R
     }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Production Server running on port ${PORT}`));
+const PORT = process.env.PORT || '3000';
+app.listen(parseInt(PORT, 10), '0.0.0.0', () => {
+  console.log(`🚀 Production Server running on port ${PORT}`);
+});
